@@ -1,0 +1,10 @@
+[package]
+name = "srt-translator"
+version = "0.1.0"
+authors = ["BaZzz01010101 <andy2002ua@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+clap = "2.32.0"
+regex = "1.1.0"
+chrono = "0.4.6"
