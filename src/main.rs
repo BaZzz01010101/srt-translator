@@ -13,16 +13,27 @@ struct Args {
   blacklist_file_name: Option<String>,
 }
 
+struct WordStat<'a> {
+  word: &'a str,
+  freq: u32,
+}
+
+struct Sentence<'a> {
+  orig: &'a str,
+  begin: usize,
+  end: usize,
+}
+
 fn main() {
   let start = Utc::now();
-  let args = process_args();
+  let args = get_args();
   process_files(args);
   let dur = Utc::now().signed_duration_since(start).num_milliseconds();
 
   println!("Succeed in {} ms", dur);
 }
 
-fn process_args() -> Args {
+fn get_args() -> Args {
   let matches = App::new("Word Parser")
     .version("1.0")
     .author("ZeuS <andy2002ua@gmail.com>")
@@ -85,7 +96,7 @@ fn process_files(args: Args) {
     let mut blacklist_string = String::new();
     blacklist_file.read_to_string(&mut blacklist_string).expect("Unable to read input File");
     let blacklist: Vec<&str> = blacklist_string.lines().collect();
-    println!("Blacklist:\n{}", blacklist_string);
+    println!("Filter out {} words", blacklist.len());
     word_stats = word_stats.into_iter().filter(|el| !blacklist.contains(&el.word)).collect();
     println!("After filter {} left", word_stats.len());
   }
@@ -93,14 +104,9 @@ fn process_files(args: Args) {
   let mut output_file = File::create(args.output_file_name).unwrap();
 
   for word_stat in &word_stats {
-    let str = format!("{}: {}\n", word_stat.freq, word_stat.word);
+    let str = format!("{}\n", word_stat.word);
     output_file.write(str.as_bytes());
   }
-}
-
-struct WordStat<'a> {
-  word: &'a str,
-  freq: u32,
 }
 
 fn collect_word_stats(text: &String) -> Vec<WordStat> {
@@ -134,12 +140,6 @@ fn collect_word_stats(text: &String) -> Vec<WordStat> {
   sorted_word_stats.sort_by(|left, right| right.freq.cmp(&left.freq));
 
   sorted_word_stats
-}
-
-struct Sentence<'a> {
-  orig: &'a str,
-  begin: usize,
-  end: usize,
 }
 
 fn collect_sentences(text: &String) -> Vec<Sentence> {
