@@ -71,22 +71,23 @@ fn process_args() -> Args {
 }
 
 fn process_files(args: Args) {
-  let mut input_file = File::open(args.input_file_name)
-    .expect("Unable to open input file");
-
+  let mut input_file = File::open(args.input_file_name).expect("Unable to open input file");
   let mut input_string = String::new();
   input_file.read_to_string(&mut input_string).expect("Unable to read input File");
-
-  //let input_words = extract_words(&input_string);
-  //let folded_input_words = fold_words(input_words);
-
   input_string.make_ascii_lowercase();
-  let word_stats = build_word_stats(&input_string);
   let sentences = collect_sentences(&input_string);
-  println!("Matched {} sentences", sentences.len());
+  println!("Found {} sentences", sentences.len());
+  let mut word_stats = collect_word_stats(&input_string);
+  println!("Found {} unique words", word_stats.len());
 
   if let Some(file_name) = args.blacklist_file_name {
-    File::open(file_name).expect("Blacklist file not found");
+    let mut blacklist_file = File::open(file_name).expect("Blacklist file not found");
+    let mut blacklist_string = String::new();
+    blacklist_file.read_to_string(&mut blacklist_string).expect("Unable to read input File");
+    let blacklist: Vec<&str> = blacklist_string.lines().collect();
+    println!("Blacklist:\n{}", blacklist_string);
+    word_stats = word_stats.into_iter().filter(|el| !blacklist.contains(&el.word)).collect();
+    println!("After filter {} left", word_stats.len());
   }
 
   let mut output_file = File::create(args.output_file_name).unwrap();
@@ -97,57 +98,12 @@ fn process_files(args: Args) {
   }
 }
 
-fn extract_words(text: &String) -> Vec<&str> {
-  let mut start_index = std::usize::MAX;
-  let mut words = Vec::new();
-
-  for (i, c) in text.chars().enumerate() {
-    if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '\'' {
-      if start_index == std::usize::MAX {
-        start_index = i;
-      }
-    } else {
-      if start_index != std::usize::MAX {
-        let word = &text[start_index..i];
-        //println!("word found: {}", word);
-        words.push(word);
-        start_index = std::usize::MAX;
-      }
-    }
-  }
-
-  words
-}
-
 struct WordStat<'a> {
   word: &'a str,
   freq: u32,
 }
 
-fn fold_words<'a>(input_words: Vec<&'a str>) -> Vec<&'a WordStat> {
-  let mut word_stats: HashMap<&str, WordStat> = HashMap::new();
-
-  for (i, word) in input_words.iter().enumerate() {
-    match word_stats.get_mut(word) {
-      Some(word_stat) => {
-        word_stat.freq = word_stat.freq + 1;
-      }
-      None => {
-        word_stats.insert(word, WordStat { word, freq: 1 });
-      }
-    }
-  }
-
-  for (i, word_stat) in word_stats.values().enumerate() {
-    println!("{} : {}", word_stat.word, word_stat.freq);
-  }
-
-  let word_stat = Vec::new();
-
-  word_stat
-}
-
-fn build_word_stats(text: &String) -> Vec<WordStat> {
+fn collect_word_stats(text: &String) -> Vec<WordStat> {
   let mut start_index = std::usize::MAX;
   let mut word_stat_index: HashMap<&str, usize> = HashMap::new();
   let mut sorted_word_stats: Vec<WordStat> = Vec::new();
@@ -166,15 +122,11 @@ fn build_word_stats(text: &String) -> Vec<WordStat> {
           word_stat.freq = word_stat.freq + 1;
         }
         None => {
-          //let mut word_stat = WordStat { word: word, freq: 1 };
-          //word_stats.insert(word, &mut word_stat);
           word_stat_index.insert(word, sorted_word_stats.len());
           sorted_word_stats.push(WordStat { word, freq: 1 });
         }
       }
 
-      //println!("word found: {}", word);
-      //words.push(word);
       start_index = std::usize::MAX;
     }
   }
@@ -192,12 +144,8 @@ struct Sentence<'a> {
 
 fn collect_sentences(text: &String) -> Vec<Sentence> {
   let mut sentences = Vec::new();
-  //let re = Regex::new(r"(?m)^\d+.?$^\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}.?$((?:^(?:<i>)?.+(?:<i>)?.?$)+)^.?$").unwrap();
-
   let re = Regex::new(r"(?ms)\d+\r?\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\r?\n(.+?)\r?\n\r?\n").unwrap();
-  //let re = Regex::new(r"(?ms)(.+?)(?:\r\n\r\n)").unwrap();
 
-  //println!("is-match: {}", re.is_match(text));
   for caps in re.captures_iter(text) {
     let m = caps.get(1).unwrap();
 
