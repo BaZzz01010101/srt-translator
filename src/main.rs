@@ -1,16 +1,20 @@
 use std::collections::hash_map::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{Utc, NaiveTime};
 use clap::{App, Arg};
 use regex::Regex;
+use regex::Captures;
+use translate_core::*;
+use std::fmt;
 
 struct Args {
-  input_file_name: String,
-  output_file_name: String,
-  blacklist_file_name: Option<String>,
+  input_subs_file_name: String,
+  output_subs_file_name: Option<String>,
+  input_blacklist_file_name: Option<String>,
+  output_whitelist_file_name: Option<String>,
 }
 
 struct WordStat<'a> {
@@ -18,19 +22,32 @@ struct WordStat<'a> {
   freq: u32,
 }
 
-struct Sentence<'a> {
-  orig: &'a str,
-  begin: usize,
-  end: usize,
+struct Sub {
+  index: u32,
+  start_time: NaiveTime,
+  end_time: NaiveTime,
+  text: String,
+  need_translation: bool,
 }
 
-fn main() {
-  let start = Utc::now();
-  let args = get_args();
-  process_files(args);
-  let dur = Utc::now().signed_duration_since(start).num_milliseconds();
+impl fmt::Display for Sub {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(f, "{}\n{} --> {}\n{}\n",
+           self.index,
+           self.start_time.format("%H:%M:%S,%3f"),
+           self.end_time.format("%H:%M:%S,%3f"),
+           self.text)
+  }
+}
 
-  println!("Succeed in {} ms", dur);
+impl Sub {
+  fn stringify(&self) -> String {
+    format!("{}\n{} --> {}\n{}\n\n",
+            self.index,
+            self.start_time.format("%H:%M:%S,%3f"),
+            self.end_time.format("%H:%M:%S,%3f"),
+            self.text)
+  }
 }
 
 fn get_args() -> Args {
@@ -40,32 +57,37 @@ fn get_args() -> Args {
     .about("Parse given text file and create a list of words filtered by black list and sorted by hit rate")
     .arg(Arg::with_name("input")
       .required(true)
-      .value_name("INPUT FILE")
-      .help("Sets an input file to use")
+      .value_name("INPUT SUBS")
+      .help("Sets an input subtitles file")
       .index(1))
     .arg(Arg::with_name("output")
       .short("o")
-      .long("out")
-      .value_name("OUTPUT FILE")
-      .help("Sets the output file to use")
+      .long("output")
+      .value_name("OUTPUT SUBS")
+      .help("Sets the output subtitles file")
       .index(2))
     .arg(Arg::with_name("blacklist")
       .short("b")
       .long("blacklist")
-      .value_name("BLACKLIST FILE")
+      .value_name("INPUT BLACKLIST")
       .takes_value(true)
-      .help("Sets the blacklist file to use"))
+      .help("Sets the input blacklist file"))
+    .arg(Arg::with_name("whitelist")
+      .short("w")
+      .long("whitelist")
+      .value_name("OUTPUT WHITELIST")
+      .help("Sets the output whitelist file"))
     .get_matches();
 
   let input_file_name = matches.value_of("input").unwrap().to_owned();
   let mut input_file_path;
 
   let output_file_name = match matches.value_of("output") {
-    Some(name) => name.to_owned(),
+    Some(name) => Option::from(name.to_owned()),
     None => {
       input_file_path = PathBuf::from(&input_file_name);
       input_file_path.set_extension("output.txt");
-      input_file_path.to_str().unwrap().to_owned()
+      Option::from(input_file_path.to_str().unwrap().to_owned())
     }
   };
 
@@ -74,62 +96,79 @@ fn get_args() -> Args {
     None => None
   };
 
+  let whitelist_file_name = match matches.value_of("whitelist") {
+    Some(name) => Option::from(name.to_owned()),
+    None => None
+  };
+
   Args {
-    input_file_name,
-    output_file_name,
-    blacklist_file_name,
+    input_subs_file_name: input_file_name,
+    output_subs_file_name: output_file_name,
+    input_blacklist_file_name: blacklist_file_name,
+    output_whitelist_file_name: whitelist_file_name,
   }
 }
 
-fn process_files(args: Args) {
-  let mut input_file = File::open(args.input_file_name).expect("Unable to open input file");
-  let mut input_string = String::new();
-  input_file.read_to_string(&mut input_string).expect("Unable to read input File");
-  input_string.make_ascii_lowercase();
-  let sentences = collect_sentences(&input_string);
-  println!("Found {} sentences", sentences.len());
-  let mut word_stats = collect_word_stats(&input_string);
-  println!("Found {} unique words", word_stats.len());
+fn load_file<P>(file_name: P) -> String where P: AsRef<Path> {
+  let mut text = String::new();
 
-  if let Some(file_name) = args.blacklist_file_name {
-    let mut blacklist_file = File::open(file_name).expect("Blacklist file not found");
-    let mut blacklist_string = String::new();
-    blacklist_file.read_to_string(&mut blacklist_string).expect("Unable to read input File");
-    let blacklist: Vec<&str> = blacklist_string.lines().collect();
-    println!("Filter out {} words", blacklist.len());
-    word_stats = word_stats.into_iter().filter(|el| !blacklist.contains(&el.word)).collect();
-    println!("After filter {} left", word_stats.len());
-  }
+  let mut input_file = File::open(file_name)
+    .expect("Unable to open input file");
 
-  let mut output_file = File::create(args.output_file_name).unwrap();
+  input_file.read_to_string(&mut text)
+    .expect("Unable to read input File");
 
-  for word_stat in &word_stats {
-    let str = format!("{}\n", word_stat.word);
-    output_file.write(str.as_bytes());
-  }
+  text
 }
 
-fn collect_word_stats(text: &String) -> Vec<WordStat> {
+fn parse_subs(text: &String) -> Vec<Sub> {
+  let mut subs = Vec::new();
+
+  let re = Regex::new(r"(?msx)
+        (?P<index>\d+)\r?\n
+        (?P<start_time>\d{2}:\d{2}:\d{2},\d{3})\s-->\s(?P<end_time>\d{2}:\d{2}:\d{2},\d{3})\r?\n
+        (?P<text>.+?)\r?\n\r?\n
+    ").unwrap();
+
+  for caps in re.captures_iter(text.as_str()) {
+    let index: u32 = caps.name("index").unwrap().as_str().parse().unwrap();
+    let start_time = NaiveTime::parse_from_str(caps.name("start_time").unwrap().as_str(), "%H:%M:%S,%3f").unwrap();
+    let end_time = NaiveTime::parse_from_str(caps.name("end_time").unwrap().as_str(), "%H:%M:%S,%3f").unwrap();
+    let text = caps.name("text").unwrap().as_str().to_owned();
+
+    subs.push(Sub {
+      index,
+      start_time,
+      end_time,
+      text,
+      need_translation: false,
+    });
+  }
+
+  subs
+}
+
+fn get_word_stats(lowercase_text: &String) -> Vec<WordStat> {
   let mut start_index = std::usize::MAX;
   let mut word_stat_index: HashMap<&str, usize> = HashMap::new();
-  let mut sorted_word_stats: Vec<WordStat> = Vec::new();
+  let mut word_stats: Vec<WordStat> = Vec::new();
 
-  for (i, c) in text.chars().enumerate() {
+  for (i, c) in lowercase_text.chars().enumerate() {
     if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '\'' {
       if start_index == std::usize::MAX {
         start_index = i;
       }
     } else if start_index != std::usize::MAX {
-      let word = &text[start_index..i];
+      let word = &lowercase_text[start_index..i];
 
       match word_stat_index.get(word) {
         Some(ind) => {
-          let mut word_stat = sorted_word_stats.get_mut(*ind).unwrap();
+          let mut word_stat = word_stats.get_mut(*ind).unwrap();
           word_stat.freq = word_stat.freq + 1;
         }
         None => {
-          word_stat_index.insert(word, sorted_word_stats.len());
-          sorted_word_stats.push(WordStat { word, freq: 1 });
+          word_stat_index.insert(word, word_stats.len());
+          word_stats.push(WordStat { word, freq: 1 });
         }
       }
 
@@ -137,24 +176,134 @@ fn collect_word_stats(text: &String) -> Vec<WordStat> {
     }
   }
 
-  sorted_word_stats.sort_by(|left, right| right.freq.cmp(&left.freq));
-
-  sorted_word_stats
+  word_stats
 }
 
-fn collect_sentences(text: &String) -> Vec<Sentence> {
-  let mut sentences = Vec::new();
-  let re = Regex::new(r"(?ms)\d+\r?\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\r?\n(.+?)\r?\n\r?\n").unwrap();
+fn translate_subs(subs: &mut Vec<Sub>, known_words: &Vec<&str>) {
+  let re_color = Regex::new("([a-zA-Z'])+").unwrap();
+  let re_newline = Regex::new("(\r?\n)").unwrap();
+  let re_clean_tags = Regex::new("(</?[ib]>)").unwrap();
+  let mut translated_chunks = String::new();
+  let mut current_chunk = String::new();
+  let mut current_chunk_size = 0;
+  const MAX_CHUNK_SIZE: usize = 4000;
 
-  for caps in re.captures_iter(text) {
-    let m = caps.get(1).unwrap();
+  for sub in subs.iter_mut() {
+    let mut need_translation = false;
 
-    sentences.push(Sentence {
-      orig: m.as_str(),
-      begin: m.start(),
-      end: m.end(),
-    });
+    sub.text = re_clean_tags.replace_all(sub.text.as_str(), "").into();
+    sub.text = re_newline.replace_all(sub.text.as_str(), " ").into();
+
+    let colored_text = re_color.replace_all(sub.text.as_str(), |caps: &Captures| {
+      let mut word = String::from(caps.get(0).unwrap().as_str());
+
+      // TODO: optimize by case insensitive comparison
+      if !known_words.iter().any(|black_list_word| *black_list_word == word.to_ascii_lowercase()) {
+        need_translation = true;
+        word = format!("<font color=\"#FFFF80\">{}</font>", word.as_str());
+      }
+
+      String::from(word)
+    }).into();
+
+    if need_translation {
+      sub.need_translation = true;
+      let text: String = re_newline.replace_all(sub.text.as_str(), "*").into();
+      let len = text.len();
+      current_chunk_size = current_chunk_size + len;
+
+      if current_chunk_size > MAX_CHUNK_SIZE {
+        //println!("Original chunk:\n {}\n", current_chunk);
+        current_chunk_size = len;
+        let translated_chunk = Google {}.translate(current_chunk, Langage::EN, Langage::RU).unwrap();
+        //println!("Translated chunk:\n {}\n", translated_chunk);
+        translated_chunks.push_str(translated_chunk.as_str());
+        translated_chunks.push_str("\r\n");
+        current_chunk = String::new();
+      }
+
+      current_chunk.push_str(text.as_str());
+      current_chunk.push_str("\r\n");
+      sub.text = colored_text
+    }
   }
 
-  sentences
+  if !current_chunk.is_empty() {
+    //println!("Original chunk:\n{}\n", current_chunk);
+    let translated_chunk = Google {}.translate(current_chunk, Langage::EN, Langage::RU).unwrap();
+    //println!("Translated chunk:\n {}\n", translated_chunk);
+    translated_chunks.push_str(translated_chunk.as_str());
+    translated_chunks.push_str("\r\n");
+  }
+
+  translated_chunks = translated_chunks.replace("\\r\\n", "\r\n");
+  let mut translated_lines = translated_chunks.lines();
+
+  for sub in subs.iter_mut() {
+    if sub.need_translation {
+      let translated_text = translated_lines.next().unwrap().replace(" *", "\r\n");
+      sub.text.push_str("\r\n");
+      sub.text.push_str(translated_text.as_str());
+    }
+  }
+}
+
+fn main() {
+  let start = Utc::now();
+  let args = get_args();
+
+  println!("Read subs from: '{}'", args.input_subs_file_name);
+  let subs_text = load_file(args.input_subs_file_name);
+  let mut subs = parse_subs(&subs_text);
+
+  let known_words_text = if let Some(file_name) = &args.input_blacklist_file_name {
+    println!("Read known words from: '{}'", file_name);
+    let known_words_text = load_file(file_name);
+    known_words_text
+  } else {
+    String::new()
+  };
+
+  let lowercase_subs_text = subs_text.to_ascii_lowercase();
+  let mut word_stats = get_word_stats(&lowercase_subs_text);
+  word_stats.sort_by(|left, right| right.freq.cmp(&left.freq));
+  let mut words: Vec<_> = word_stats.iter().map(|word_stat| word_stat.word).collect();
+  println!("Found {} unique words", words.len());
+  let known_words: Vec<_> = known_words_text.lines().collect();
+  println!("Filter out {} known words", known_words.len());
+  words.retain(|word| !known_words.contains(word));
+  println!("After filter {} unknown words left", words.len());
+
+  if let Some(file_name) = &args.output_whitelist_file_name {
+    println!("Write unknown words to: '{}'", file_name);
+
+    let mut output_file = File::create(file_name)
+      .expect("Failed to open file for writing");
+
+    for word in &words {
+      if !known_words.contains(word) {
+        let str = format!("{}\n", word);
+        output_file.write(str.as_bytes())
+          .expect("Failed to write to the file");
+      }
+    }
+  }
+
+  if let Some(file_name) = &args.output_subs_file_name {
+    println!("Translate subs");
+    translate_subs(&mut subs, &known_words);
+    let translated_subs_text = subs.iter().fold(String::new(), |acc, sub| acc + &sub.stringify());
+
+    println!("Write translated subs to: '{}'", file_name);
+
+    let mut output_file = File::create(file_name)
+      .expect("Failed to open file for writing");
+
+    output_file.write(translated_subs_text.as_bytes())
+      .expect("Failed to write to the file");
+  }
+
+
+  let dur = Utc::now().signed_duration_since(start).num_milliseconds();
+  println!("Succeed in {} ms", dur);
 }
