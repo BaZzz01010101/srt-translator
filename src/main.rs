@@ -197,15 +197,16 @@ fn translate_subs(subs: &mut Vec<Sub>, known_words: &Vec<&str>) {
     sub.text = re_newline.replace_all(sub.text.as_str(), " ").into();
 
     let colored_text = re_color.replace_all(sub.text.as_str(), |caps: &Captures| {
-      let mut word = String::from(caps.get(0).unwrap().as_str());
+      let captured_word = caps.get(0).unwrap().as_str();
 
       // TODO: optimize by case insensitive comparison
-      if !known_words.iter().any(|black_list_word| *black_list_word == word.to_ascii_lowercase()) {
+      if !known_words.iter().any(|known_word| *known_word == captured_word.to_ascii_lowercase()) {
         need_translation = true;
-        word = format!("<font color=\"#FFFF80\">{}</font>", word.as_str());
+
+        return format!("<font color=\"#FFFF80\">{}</font>", captured_word);
       }
 
-      String::from(word)
+      String::from(captured_word)
     }).into();
 
     if need_translation {
