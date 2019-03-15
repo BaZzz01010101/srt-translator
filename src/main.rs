@@ -11,10 +11,10 @@ use translate_core::*;
 use std::fmt;
 
 struct Args {
-  input_subs_file_name: String,
-  output_subs_file_name: Option<String>,
-  input_blacklist_file_name: Option<String>,
-  output_whitelist_file_name: Option<String>,
+  input_subs_filename: String,
+  output_subs_filename: Option<String>,
+  known_words_filename: Option<String>,
+  new_words_filename: Option<String>,
 }
 
 struct WordStat<'a> {
@@ -54,58 +54,60 @@ fn get_args() -> Args {
   let matches = App::new("Word Parser")
     .version("1.0")
     .author("ZeuS <andy2002ua@gmail.com>")
-    .about("Parse given text file and create a list of words filtered by black list and sorted by hit rate")
-    .arg(Arg::with_name("input")
+    .about("Translate given subtitles file selectively using lists of known and unknown words")
+    .arg(Arg::with_name("input subs")
       .required(true)
       .value_name("INPUT SUBS")
       .help("Sets an input subtitles file")
       .index(1))
-    .arg(Arg::with_name("output")
+    .arg(Arg::with_name("output subs")
       .short("o")
-      .long("output")
+      .long("output-subs")
       .value_name("OUTPUT SUBS")
+      .takes_value(true)
       .help("Sets the output subtitles file")
       .index(2))
-    .arg(Arg::with_name("blacklist")
-      .short("b")
-      .long("blacklist")
-      .value_name("INPUT BLACKLIST")
+    .arg(Arg::with_name("known words")
+      .short("k")
+      .long("known-words")
+      .value_name("INPUT KNOWN WORDS")
       .takes_value(true)
-      .help("Sets the input blacklist file"))
-    .arg(Arg::with_name("whitelist")
-      .short("w")
-      .long("whitelist")
-      .value_name("OUTPUT WHITELIST")
-      .help("Sets the output whitelist file"))
+      .help("Sets the known words file"))
+    .arg(Arg::with_name("new words")
+      .short("n")
+      .long("new-words")
+      .value_name("OUTPUT NEW WORDS")
+      .takes_value(true)
+      .help("Sets the output new words file"))
     .get_matches();
 
-  let input_file_name = matches.value_of("input").unwrap().to_owned();
+  let input_subs_filename = matches.value_of("input subs").unwrap().to_owned();
   let mut input_file_path;
 
-  let output_file_name = match matches.value_of("output") {
+  let output_subs_filename = match matches.value_of("output subs") {
     Some(name) => Option::from(name.to_owned()),
     None => {
-      input_file_path = PathBuf::from(&input_file_name);
-      input_file_path.set_extension("output.txt");
+      input_file_path = PathBuf::from(&input_subs_filename);
+      input_file_path.set_extension("output.srt");
       Option::from(input_file_path.to_str().unwrap().to_owned())
     }
   };
 
-  let blacklist_file_name = match matches.value_of("blacklist") {
+  let known_words_filename = match matches.value_of("known words") {
     Some(name) => Option::from(name.to_owned()),
     None => None
   };
 
-  let whitelist_file_name = match matches.value_of("whitelist") {
+  let new_words_filename = match matches.value_of("new words") {
     Some(name) => Option::from(name.to_owned()),
     None => None
   };
 
   Args {
-    input_subs_file_name: input_file_name,
-    output_subs_file_name: output_file_name,
-    input_blacklist_file_name: blacklist_file_name,
-    output_whitelist_file_name: whitelist_file_name,
+    input_subs_filename,
+    output_subs_filename,
+    known_words_filename,
+    new_words_filename,
   }
 }
 
@@ -113,10 +115,10 @@ fn load_file<P>(file_name: P) -> String where P: AsRef<Path> {
   let mut text = String::new();
 
   let mut input_file = File::open(file_name)
-    .expect("Unable to open input file");
+    .expect("Unable to open file");
 
   input_file.read_to_string(&mut text)
-    .expect("Unable to read input File");
+    .expect("Unable to read file");
 
   text
 }
@@ -252,11 +254,11 @@ fn main() {
   let start = Utc::now();
   let args = get_args();
 
-  println!("Read subs from: '{}'", args.input_subs_file_name);
-  let subs_text = load_file(args.input_subs_file_name);
+  println!("Read subs from: '{}'", args.input_subs_filename);
+  let subs_text = load_file(args.input_subs_filename);
   let mut subs = parse_subs(&subs_text);
 
-  let known_words_text = if let Some(file_name) = &args.input_blacklist_file_name {
+  let known_words_text = if let Some(file_name) = &args.known_words_filename {
     println!("Read known words from: '{}'", file_name);
     let known_words_text = load_file(file_name);
     known_words_text
@@ -274,8 +276,8 @@ fn main() {
   words.retain(|word| !known_words.contains(word));
   println!("After filter {} unknown words left", words.len());
 
-  if let Some(file_name) = &args.output_whitelist_file_name {
-    println!("Write unknown words to: '{}'", file_name);
+  if let Some(file_name) = &args.new_words_filename {
+    println!("Write new words to: '{}'", file_name);
 
     let mut output_file = File::create(file_name)
       .expect("Failed to open file for writing");
@@ -289,7 +291,7 @@ fn main() {
     }
   }
 
-  if let Some(file_name) = &args.output_subs_file_name {
+  if let Some(file_name) = &args.output_subs_filename {
     println!("Translate subs");
     translate_subs(&mut subs, &known_words);
     let translated_subs_text = subs.iter().fold(String::new(), |acc, sub| acc + &sub.stringify());
